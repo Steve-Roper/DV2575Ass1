@@ -35,31 +35,35 @@ __device__ int atomicMul(int* address, int val)
 	return old;
 }
 
-__global__ bool OddEvenSort(int *in_array, bool *in_notSorted)
+__global__ void OddEvenSort(int *in_array, const int *in_arraySize)
 {
 	bool sorted = true;
-	int index = (threadIdx.x + blockIdx.x /*multiply by block size*/) * 2;
+	int index = (threadIdx.x + blockIdx.x * blockDim.x) * 2;
 
 	//swap evens iteration 1, swap odds iteration 2.
-	for (int i = 0; i < 2; ++i)
+	for (int i = 0; i < *in_arraySize - 1; ++i)
 	{
-		int min = in_array[index + (in_array[index] > in_array[index + 1])];
-		int max = in_array[index + (in_array[index] <= in_array[index + 1])];
+		for (int j = 0; j < 2; ++j)
+		{
+			int min = in_array[index + (in_array[index] > in_array[index + 1])];
+			int max = in_array[index + (in_array[index] <= in_array[index + 1])];
 
-		in_array[index] = min;
-		in_array[index++] = max;
-		sorted = false;
-		__syncthreads();
+			in_array[index] = min;
+			in_array[index++] = max;
+			sorted = false;
+			__syncthreads();
+		}
 	}
 
 	//atomic multiplication on in_notSorted to determmine if the array is sorted
-	atomicMul((int*)in_notSorted, sorted);
+	
+	//atomicMul((int*)in_notSorted, (int)sorted);
 
 }
 
 int main()
 {
-	const int arraySize = 32 * 4 * 13 * 2; //max number of threads, times 2 b/c 2 are compared
+	const int arraySize = 2048;//32 * 4 * 13 * 2; //max number of threads, times 2 b/c 2 are compared
 	cudaError_t cudaStatus;
 	int* hostArray = (int*)malloc(arraySize * sizeof(int));
 	int* deviceArray;
@@ -83,14 +87,14 @@ int main()
 		goto Error;
 	}
 
-	dim3 blockDim();
-	dim3 gridDim();
+	dim3 block_dim = dim3(/*how many threads*/1024 /*max for 900 series*/, 1, 1);
+	dim3 grid_dim = dim3(/*how many blocks*/1, 1, 1);
 
-	bool notSorted = true;
-	while (notSorted)
-	{
-
-	}
+	//bool notSorted = true;
+	//while (notSorted)
+	//{
+		OddEvenSort <<<grid_dim, block_dim >>>(hostArray, &arraySize);
+	//}
 	/*const int arraySize = 5;
 	const int a[arraySize] = { 1, 2, 3, 4, 5 };
 	const int b[arraySize] = { 10, 20, 30, 40, 50 };
@@ -113,6 +117,18 @@ int main()
 	fprintf(stderr, "cudaDeviceReset failed!");
 	return 1;
 	}*/
+	// Copy output vector from GPU buffer to host memory.
+	cudaStatus = cudaMemcpy(hostArray, deviceArray, arraySize * sizeof(int), cudaMemcpyDeviceToHost);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "Failed to copy from device to host\n");
+		goto Error;
+	}
+
+	for (int i = 0; i < arraySize; ++i)
+	{
+		printf("%d\t", hostArray[i]);
+	}
+	
 Error:
 	free(hostArray);
 	cudaFree(deviceArray);
