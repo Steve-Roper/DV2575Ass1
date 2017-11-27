@@ -35,11 +35,10 @@ __device__ int atomicMul(int* address, int val)
 	return old;
 }
 
-__global__ void OddEvenSort(int *in_array, const int *in_arraySize)
+__global__ void OddEvenSort(int *in_array, const int *in_arraySize, int *out_array)
 {
 	bool sorted = true;
 	int index = (threadIdx.x + blockIdx.x * blockDim.x) * 2;
-
 	//swap evens iteration 1, swap odds iteration 2.
 	for (int i = 0; i < *in_arraySize - 1; ++i)
 	{
@@ -48,8 +47,8 @@ __global__ void OddEvenSort(int *in_array, const int *in_arraySize)
 			int min = in_array[index + (in_array[index] > in_array[index + 1])];
 			int max = in_array[index + (in_array[index] <= in_array[index + 1])];
 
-			in_array[index] = min;
-			in_array[index++] = max;
+			out_array[index] = min;
+			out_array[index++] = max;
 			sorted = false;
 			__syncthreads();
 		}
@@ -73,7 +72,13 @@ int main()
 		printf("Could not allocate device memory\n");
 		goto Error;
 	}
-
+	int* sortedArray;
+	cudaStatus = cudaMalloc(&sortedArray, arraySize * sizeof(int));
+	if (cudaStatus != cudaSuccess)
+	{
+		printf("Could not allocate output buffer memory\n");
+		goto Error;
+	}
 	srand(time(NULL));
 	for (int i = 0; i < arraySize; ++i)
 	{
@@ -93,8 +98,9 @@ int main()
 	//bool notSorted = true;
 	//while (notSorted)
 	//{
-		OddEvenSort <<<grid_dim, block_dim >>>(hostArray, &arraySize);
+		OddEvenSort <<<grid_dim, block_dim>>>(hostArray, &arraySize, sortedArray);
 	//}
+		cudaDeviceSynchronize();
 	/*const int arraySize = 5;
 	const int a[arraySize] = { 1, 2, 3, 4, 5 };
 	const int b[arraySize] = { 10, 20, 30, 40, 50 };
@@ -118,9 +124,9 @@ int main()
 	return 1;
 	}*/
 	// Copy output vector from GPU buffer to host memory.
-	cudaStatus = cudaMemcpy(hostArray, deviceArray, arraySize * sizeof(int), cudaMemcpyDeviceToHost);
+	cudaStatus = cudaMemcpy(sortedArray, deviceArray, arraySize * sizeof(int), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "Failed to copy from device to host\n");
+		fprintf(stderr, "Failed to copy memory from device to host\n");
 		goto Error;
 	}
 
@@ -132,6 +138,7 @@ int main()
 Error:
 	free(hostArray);
 	cudaFree(deviceArray);
+	cudaFree(sortedArray);
 
 	system("PAUSE");
 	return 0;
