@@ -9,70 +9,79 @@
 
 #ifdef __INTELLISENSE__
 void __syncthreads();
-int atomicCAS(unsigned long long int* old, unsigned long long int comp, unsigned long long int val);
 #endif
 
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
-
-__global__ void addKernel(int *c, const int *a, const int *b)
+__global__ void OddEvenSort(int *in_array, int *in_arraySize, int *in_sortAmount, int *in_threads)
 {
-	int i = threadIdx.x;
-	c[i] = a[i] + b[i];
-}
-
-__device__ int atomicMul(int* address, int val)
-{
-	unsigned long long int* address_as_ull = (unsigned long long int*)address;
-	unsigned long long int old = *address_as_ull, assumed;
-
-	do
+	int index = (threadIdx.x + blockIdx.x * blockDim.x) * 2;//* *in_sortAmount;
+	int compare[2];
+	int threads = *in_threads;
+	for(int i = 0; i < 2; ++i)
 	{
-		assumed = old;
-		old = atomicCAS(address_as_ull, assumed, (unsigned long long int)(val * assumed));
-
-	} while (assumed != old);
-
-	return old;
-}
-
-__global__ void OddEvenSort(int *in_array, int *in_arraySize, const int *in_sorted, const int *in_sortAmount)
-{
-	bool sorted = true;
-	int index = (threadIdx.x + blockIdx.x * blockDim.x) * 2 * (*in_sortAmount);
-	//swap evens iteration 1, swap odds iteration 2.
-	for (int i = 0; i < *in_sortAmount; ++i)
-	{
-		for (int j = 0; j < 2; ++j)
+		index += i;
+		for(int j = 0; j < *in_sortAmount; ++j)
 		{
-			int tempindex = index + j;
-			if (tempindex + 1 < *in_arraySize) //thread diversion in just one warp.
+			int tempindex = index + j * 2 * threads;
+			if(tempindex + 1 < *in_arraySize)
 			{
-				int min = tempindex + (int)(in_array[tempindex] > in_array[tempindex + 1]);
-				int max = tempindex + (int)(in_array[tempindex] < in_array[tempindex + 1]);
-				sorted = min <= max;
+				compare[0] = in_array[tempindex];
+				compare[1] = in_array[tempindex + 1];
+				int min = (int)(compare[0] > compare[1]);
+				int max = (int)(compare[0] < compare[1]);
+				/*if (!index && j == 1)
+				{
+					printf("From compare:\nmin pos: %d,\tmax pos: %d\n", min, max);
+				}*/
+				min = compare[min];
+				max = compare[max];
+				/*if (!index && j == 1)
+				{
+					printf("min val: %d,\tmax val: %d\n", min, max);
+					printf("      0: %d,\t      1: %d\n", compare[0], compare[1]);
+				}*/
 
+				/*min = tempindex + (int)(in_array[tempindex] > in_array[tempindex + 1]);
+				max = tempindex + (int)(in_array[tempindex] < in_array[tempindex + 1]);
+				if (!index && !j)
+				{
+					printf("From array:\nmin pos: %d,\tmax pos: %d\n", min, max);
+				}
 				min = in_array[min];
 				max = in_array[max];
-
+				if (!index && !j)
+				{
+					printf("min val: %d,\tmax val: %d\n", min, max);
+				}
+*/
 				in_array[tempindex] = min;
 				in_array[tempindex + 1] = max;
 				__syncthreads();
 			}
 		}
-		index += 2;
 	}
-	//atomic multiplication (and) on in_notSorted to determmine if the array is sorted
-	atomicMul((int*)in_sorted, (int)sorted);
 }
 
 int main()
 {
 	cudaError_t cudaStatus;
 
-	dim3 grid_dim = dim3(/*how many blocks*/1, 1, 1);
-	dim3 block_dim = dim3(/*how many threads*/1024 /*max per block for 900 series*/, 1, 1);
-
-	const int arraySize = 14000;
+	dim3 grid_dim = dim3(/*how many blocks*/9, 1, 1); //940m has 384 threads total
+	dim3 block_dim = dim3(/*how many threads*/1024 /*1024 max per block for 900 series*/, 1, 1);
+	int noThreads = grid_dim.x * block_dim.x;
+	int *deviceNoThreads = 0;
+	cudaStatus = cudaMalloc(&deviceNoThreads, sizeof(int));
+	if (cudaStatus != cudaSuccess)
+	{
+		printf("Could not allocate device memory for size of array\n");
+		goto Error;
+	}
+	cudaStatus = cudaMemcpy((void*)deviceNoThreads, &noThreads, sizeof(int), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess)
+	{
+		printf("Could not copy host arraySize to device\n");
+		goto Error;
+	}
+	const int arraySize = 140000;
 	int *deviceArraySize = 0;
 	cudaStatus = cudaMalloc(&deviceArraySize, sizeof(int));
 	if (cudaStatus != cudaSuccess)
@@ -101,13 +110,6 @@ int main()
 		goto Error;
 	}
 
-	cudaStatus = cudaMemcpy((void*)deviceArray, (void*)hostArray, arraySize * (sizeof(int)), cudaMemcpyHostToDevice);
-	if (cudaStatus != cudaSuccess)
-	{
-		printf("Could not copy host array to device\n");
-		goto Error;
-	}
-
 	int numZeros = 0;
 	for (int i = 0; i < arraySize; ++i)
 	{
@@ -115,15 +117,8 @@ int main()
 			numZeros++;
 	}
 	printf("numZeros before: %d\n\n", numZeros);
-	int sorted = 0;
-	int *deviceSorted = 0;
-	cudaStatus = cudaMalloc(&deviceSorted, sizeof(int));
-	if (cudaStatus != cudaSuccess)
-	{
-		printf("Could not allocate device memory for sorted int\n");
-		goto Error;
-	}
-	int toSort = (arraySize / 2 - 1)/*how many threads we want to run*/ / (block_dim.x * grid_dim.x) /*how many threads we actually run*/ + 1;
+
+	int toSort = (arraySize / 2 - 1)/*how many threads we want to run*/ / noThreads /*how many threads we actually run*/ + 1; //how many odd+even each thread will perform
 	int *deviceToSort = 0;
 	cudaStatus = cudaMalloc(&deviceToSort, sizeof(int));
 	if (cudaStatus != cudaSuccess)
@@ -137,46 +132,49 @@ int main()
 		printf("Could not copy host toSort to device\n");
 		goto Error;
 	}
-	int calls = 0;
+	cudaStatus = cudaMemcpy(deviceArray, hostArray, arraySize * sizeof(int), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess)
+	{
+		printf("Could not copy host array to device%d\n");
+		goto Error;
+	}
 	timespec before;
 	timespec_get(&before, TIME_UTC);
 
-	while (!sorted)
+	for(int i = 0; i < arraySize / 2; ++i)
 	{
-		calls++;
-		sorted = 1;
-		cudaStatus = cudaMemcpy((void*)deviceSorted, &sorted, sizeof(int), cudaMemcpyHostToDevice);
-		if (cudaStatus != cudaSuccess)
-		{
-			printf("Could not copy host sorted to device\n");
-			goto Error;
-		}
-		OddEvenSort << <grid_dim, block_dim >> >(deviceArray, deviceArraySize, deviceSorted, deviceToSort);
-		cudaDeviceSynchronize();
-
-		cudaStatus = cudaMemcpy(&sorted, deviceSorted, sizeof(int), cudaMemcpyDeviceToHost);
-		if (cudaStatus != cudaSuccess)
-		{
-			printf("Could not copy device sorted to host\n");
-			goto Error;
-		}
+		OddEvenSort << <grid_dim, block_dim >> >(deviceArray, deviceArraySize, deviceToSort, deviceNoThreads);
+		//cudaDeviceSynchronize();
 	}
 
 	timespec after;
 	timespec_get(&after, TIME_UTC);
-
+	cudaStatus = cudaMemcpy(hostArray, deviceArray, arraySize * sizeof(int), cudaMemcpyDeviceToHost);
+	if (cudaStatus != cudaSuccess) {
+		printf("Failed to copy device array to host%d\n");
+		goto Error;
+	}
 	// Copy output vector from GPU buffer to host memory.
 	cudaStatus = cudaMemcpy(hostArray, deviceArray, arraySize * sizeof(int), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "Failed to copy device array to host\n");
+		printf("Failed to copy device array to host\n");
 		goto Error;
 	}
 	numZeros = 0;
-	for (int i = 0; i < arraySize; ++i)
+	int failed = 0;
+	printf("%d\t", hostArray[0]);
+	if (!hostArray[0])
+		numZeros++;
+	for (int i = 1; i < arraySize; ++i)
 	{
 		printf("%d\t", hostArray[i]);
 		if (!hostArray[i])
 			numZeros++;
+		if (hostArray[i - 1] > hostArray[i])
+		{
+			failed = i;
+			break;
+		}
 	}
 	printf("\nnumZeros after: %d\n", numZeros);
 
@@ -185,13 +183,15 @@ int main()
 	timeTakenNsec = (timeTakenNsec < 0) ? -timeTakenNsec : timeTakenNsec;
 	int timeTakenMsec = round(timeTakenNsec / 1000000.f);
 
-	printf("\n%d kernel launch(es) over %lld seconds and %d milliseconds\n\n", calls, timeTakenSec, timeTakenMsec);
-	
+	printf("\nSorted in %lld seconds and %d milliseconds\n\n", timeTakenSec, timeTakenMsec);
+
+	if (failed)
+		printf("\Failed to sort array at element %d\n\n", failed);
+
 Error:
 	free(hostArray);
 	cudaFree(deviceArray);
 	cudaFree(deviceArraySize);
-	cudaFree(deviceSorted);
 	cudaFree(deviceToSort);
 
 	system("PAUSE");
