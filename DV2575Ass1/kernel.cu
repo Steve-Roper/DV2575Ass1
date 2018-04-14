@@ -72,11 +72,11 @@ int main()
 	
 	for (int i = 0; i < 10; ++i)
 	{
-		for (int j = 1000; j < 100001; j *= 10)
+		for (int j = 256; j < 1025; j *= 2)
 		{
-			const int arraySize = j;
+			const int arraySize = 100000;
 			int stride = 1;
-			dim3 block_dim = dim3(/*how many threads*/128 / stride /*1024 max per block for 900 series*/, 1, 1);
+			dim3 block_dim = dim3(/*how many threads*/j / stride /*1024 max per block for 900 series*/, 1, 1);
 			int blocks = (arraySize / 2 - 1)/*how many threads we want to run*/ / block_dim.x/*how many threads we actually run per block*/ + 1; //totals how many blocks to run
 			dim3 grid_dim = dim3(blocks/*how many blocks*/, 1, 1);
 			std::cout << "Started working on array of size " << arraySize << std::endl;
